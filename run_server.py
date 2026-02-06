@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 from rexec_server.server import RExecServer
 
 if __name__ == "__main__":
@@ -20,9 +21,22 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "--heartbeat_interval",
+        type=float,
+        default=float(os.environ.get("REXEC_HEARTBEAT_INTERVAL", "3600")),
+        help="Seconds between heartbeat pings to broker (0 to disable).",
+    )
+
+    parser.add_argument(
         "-v", "--verbose",
         help="Be verbose",
         action="store_const", dest="loglevel", const=logging.INFO,
+    )
+    
+    parser.add_argument(
+        "--debug",
+        help="Show debug info",
+        action="store_const", dest="loglevel", const=logging.DEBUG,
     )
 
     args = parser.parse_args()
