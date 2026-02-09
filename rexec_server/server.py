@@ -1,9 +1,13 @@
 import logging
 import os
-import zmq
+import time
+
 import dill
 import dxspaces
 import rexec.remote_obj
+import zmq
+
+HEARTBEAT_FRAME = b"__REXEC_HEARTBEAT__"
 
 class RExecServer:
     rexec.remote_obj.DSDataObj.ctx = "server"
@@ -12,6 +16,7 @@ class RExecServer:
         self.zmq_addr = "tcp://" + args.broker_addr + ":" + args.broker_port
         self.zmq_context = zmq.Context()
         self.zmq_socket = self.zmq_context.socket(zmq.DEALER)
+        self.heartbeat_interval = max(0.0, float(args.heartbeat_interval))
 
         # Set server identity from server container's env var
         user_id = os.environ.get("REXEC_USER_ID") # env var for server identity; set during deployment
@@ -49,9 +54,49 @@ class RExecServer:
                 body = frames[idx + 1:]
                 return envelope, idx, body
         return [], None, frames
+
+    def _send_heartbeat(self) -> None:
+        if self.heartbeat_interval <= 0:
+            return
+        try:
+            # Empty delimiter keeps framing consistent for broker parsing.
+            self.zmq_socket.send_multipart(
+                [b"", HEARTBEAT_FRAME], zmq.DONTWAIT
+            )
+            logging.debug("Sent heartbeat to broker.")
+        except zmq.Again:
+            logging.debug("Heartbeat dropped due to backpressure.")
+        except zmq.ZMQError as exc:
+            logging.warning("Failed to send heartbeat: %s", exc)
     
     def fn_recv_exec(self):
-        while(True):
+        # Set up poller for zmq socket with heartbeat handling
+        poller = zmq.Poller()
+        poller.register(self.zmq_socket, zmq.POLLIN)
+        next_heartbeat = (
+            time.monotonic() + self.heartbeat_interval
+            if self.heartbeat_interval > 0
+            else None
+        )
+        # Main loop to receive and execute functions, send back results; with heartbeat keepalive
+        while True:
+            # Determine poll timeout based on heartbeat schedule
+            if next_heartbeat is None:
+                events = dict(poller.poll())
+            else:
+                timeout_ms = max(
+                    0,
+                    int((next_heartbeat - time.monotonic()) * 1000),
+                )
+                events = dict(poller.poll(timeout_ms))
+
+            if self.zmq_socket not in events:
+                if next_heartbeat is not None and time.monotonic() >= next_heartbeat:
+                    self._send_heartbeat()
+                    next_heartbeat = time.monotonic() + self.heartbeat_interval
+                continue
+            
+            # Receive zmq message
             zmq_msg = self.zmq_socket.recv_multipart()
 
             # received zmq_msg: envelope(client_id) + b"" + body(pfn, pargs)
@@ -88,6 +133,10 @@ class RExecServer:
                 self.zmq_socket.send_multipart(envelope + [b""] + [pret])
             else:
                 self.zmq_socket.send(pret)
+
+            if next_heartbeat is not None and time.monotonic() >= next_heartbeat:
+                self._send_heartbeat()
+                next_heartbeat = time.monotonic() + self.heartbeat_interval
 
     def run(self):
         try:
