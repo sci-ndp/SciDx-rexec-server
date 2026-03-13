@@ -23,7 +23,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--heartbeat_interval",
         type=float,
-        default=float(os.environ.get("REXEC_HEARTBEAT_INTERVAL", "3600")),
+        default=float(os.environ.get("REXEC_HEARTBEAT_INTERVAL", "3600")), # Default to 1 hour
         help="Seconds between heartbeat pings to broker (0 to disable).",
     )
 
